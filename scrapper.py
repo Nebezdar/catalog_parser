@@ -6,7 +6,7 @@ import random
 
 class ProductScraper:
     def __init__(self, base_url):
-        self.base_url = base_url.rstrip('/')  # Убираем завершающий слэш
+        self.base_url = base_url.rstrip('/')
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
@@ -28,26 +28,25 @@ class ProductScraper:
             return None
         
         try:
+            # Получаем название категории и артикул
+            category = soup.select_one('.b-item-title h5')
+            article = soup.select_one('.b-item-title h1')
+            
+            # Получаем описание
+            description = soup.select_one('.b-text p')
+            
+            # Получаем характеристики
+            specifications = soup.select_one('.b-text.b-text-table')
+            
             product = {
-                'название': soup.select_one('#pagetitle').text.strip() if soup.select_one('#pagetitle') else '',
-                'артикул': soup.select_one('.catalog-element-article span').text.strip() if soup.select_one('.catalog-element-article span') else '',
-                'описание': soup.select_one('.catalog-element-section-description').text.strip() if soup.select_one('.catalog-element-section-description') else '',
-                'цена': soup.select_one('.catalog-element-price-discount').text.strip() if soup.select_one('.catalog-element-price-discount') else '',
-                'характеристики': '',
-                'url': product_url
+                'категория': category.text.strip() if category else '',
+                'артикул': article.text.strip() if article else '',
+                'описание': description.text.strip() if description else '',
+                'характеристики': specifications.text.strip() if specifications else '',
+                'url': product_url,
+                'новинка': 'да' if soup.select_one('.b-new') else 'нет'
             }
             
-            # Собираем характеристики
-            chars_table = soup.select('.catalog-element-section-property')
-            characteristics = []
-            for char in chars_table:
-                name = char.select_one('.catalog-element-section-property-name')
-                value = char.select_one('.catalog-element-section-property-value')
-                if name and value:
-                    characteristics.append(f"{name.text.strip()}: {value.text.strip()}")
-            
-            # Исправлено объединение строк
-            product['характеристики'] = '\n'.join(characteristics)
             return product
         except Exception as e:
             print(f"Ошибка при парсинге товара {product_url}: {e}")
@@ -60,7 +59,7 @@ class ProductScraper:
             return
 
         # Находим все товары в каталоге
-        items = soup.select('.catalog-section-item')
+        items = soup.select('.b-goods li')
         if not items:
             print("Товары не найдены")
             return
@@ -70,25 +69,19 @@ class ProductScraper:
 
         for index, item in enumerate(items, 1):
             try:
-                # Исправляем селектор для поиска ссылки (убираем пробел между классами)
-                link = item.select_one('.section-item-name.intec-cl-text-hover')
+                # Ищем ссылку на товар
+                link = item.find('a')
                 if not link:
-                    # Попробуем альтернативный селектор
-                    link = item.select_one('a[data-role="offer.link"]')
-                    if not link:
-                        print(f"Не найдена ссылка для товара {index}")
-                        continue
-                        
+                    print(f"Не найдена ссылка для товара {index}")
+                    continue
+                
                 href = link.get('href')
                 if not href:
                     print(f"Не найден URL для товара {index}")
                     continue
 
-                # Формируем правильный URL
-                if href.startswith('/'):
-                    product_url = f"{self.base_url}{href}"
-                else:
-                    product_url = f"{self.base_url}/{href}" 
+                # Формируем полный URL
+                product_url = f"{self.base_url}{href}" if href.startswith('/') else href
 
                 print(f"\nОбработка товара {index}/{total_items}")
                 print(f"URL товара: {product_url}")
@@ -96,7 +89,7 @@ class ProductScraper:
                 product_data = self.parse_product(product_url)
                 if product_data:
                     self.products.append(product_data)
-                    print(f"✓ Собран товар: {product_data['название']}")
+                    print(f"✓ Собран товар: {product_data['артикул']}")
                 else:
                     print(f"✗ Ошибка при сборе товара: {product_url}")
                 
@@ -111,46 +104,69 @@ class ProductScraper:
             print("Нет данных для сохранения")
             return
             
-        # Проверяем существование файла
-        try:
-            existing_df = pd.read_csv(filename, encoding='utf-8-sig')
-            # Объединяем существующие данные с новыми
-            df = pd.concat([existing_df, pd.DataFrame(self.products)], ignore_index=True)
-        except FileNotFoundError:
-            # Если файл не существует, создаем новый
-            df = pd.DataFrame(self.products)
+        new_df = pd.DataFrame(self.products)
         
-        # Сохраняем объединенные данные
+        try:
+            # Пытаемся прочитать существующий файл
+            existing_df = pd.read_csv(filename, encoding='utf-8-sig')
+            
+            # Проверяем на дубликаты по артикулу и названию
+            existing_items = set(existing_df['артикул'].dropna()) | set(existing_df['название'].dropna())
+            new_items = set(new_df['артикул'].dropna()) | set(new_df['название'].dropna())
+            
+            # Находим только новые товары
+            duplicates = len(new_items & existing_items)
+            if duplicates > 0:
+                print(f"\nНайдено дубликатов: {duplicates}")
+                
+                # Фильтруем новые товары
+                new_df = new_df[~((new_df['артикул'].isin(existing_df['артикул'])) | 
+                                 (new_df['название'].isin(existing_df['название'])))]
+                
+            # Объединяем с существующими данными
+            df = pd.concat([existing_df, new_df], ignore_index=True)
+            
+        except FileNotFoundError:
+            print("\nСоздание нового файла")
+            df = new_df
+        
+        # Сохраняем результат
         df.to_csv(filename, index=False, encoding='utf-8-sig')
-        print(f"\nДанные сохранены в {filename}")
+        print(f"Данные сохранены в {filename}")
         print(f"Всего товаров в файле: {len(df)}")
-        print(f"Добавлено новых товаров: {len(self.products)}")
+        print(f"Добавлено новых товаров: {len(new_df)}")
+        print(f"Пропущено дубликатов: {len(self.products) - len(new_df)}")
 
 if __name__ == "__main__":
-    base_url = "https://bdrosma.ru"
+    base_url = "https://manotom.com/"
     
     scraper = ProductScraper(base_url)
     
-    # Можно собирать данные с разных разделов
-    scraper.parse_catalog('/catalog/manometry/')
-    scraper.save_to_csv('manometry.csv')
+    # Список разделов для парсинга
+    sections = [
+        '/catalog/mekh/manometry-strelochnye-s-kanalom-peredachi-dannykh/',
+        '/catalog/mekh/tochnye/tochnye/',
+        '/catalog/mekh/tochnye/tekhnicheskie/',
+        '/catalog/mekh/tochnye/ammiachnye/',
+        '/catalog/mekh/tochnye/korrozionnostoykie/',
+        '/catalog/mekh/tochnye/manometry-korrozionnostoykie-v-bezopasnom-korpuseе/',
+        '/catalog/mekh/tochnye/manometry-s-zashchitoy-ot-peregruzki/',
+        '/catalog/mekh/tochnye/vibroustoychivye/',
+        '/catalog/mekh/tochnye/manometry-vibroustoychivye-korrozionnostoykie/',
+        '/catalog/mekh/tochnye/electro-signal/',
+        '/catalog/mekh/tochnye/electro-signal-vzr/',
+        '/catalog/mekh/tochnye/zhd/',
+        '/catalog/mekh/tochnye/sudovye/',
+        '/catalog/mekh/tochnye/foodprom/',
+        '/catalog/mekh/tochnye/dif/',
+        '/catalog/mekh/tochnye/vacuum/',
+        
+        # Добавьте другие разделы по необходимости
+    ]
     
-    # Для другого раздела
-    scraper.products = []  # Очищаем список перед новым сбором
-    scraper.parse_catalog('/catalog/tsifrovye_monometry/')
-    scraper.save_to_csv('manometry.csv')  # Данные добавятся в конец файла
-
-    scraper.products = []  
-    scraper.parse_catalog('/catalog/tsifrovye_manometry/')
-    scraper.save_to_csv('manometry.csv')  
-
-    scraper.products = []  
-    scraper.parse_catalog('/catalog/naparomer/')
-    scraper.save_to_csv('manometry.csv')  
-
-    scraper.products = []  
-    scraper.parse_catalog('/catalog/tsifrovye_monometry/')
-    scraper.save_to_csv('manometry.csv')
+    for section in sections:
+        scraper.parse_catalog(section)
+        scraper.save_to_csv('manometry_new.csv')
+        scraper.products = []  # Очищаем список перед следующим разделом
 
 
-    
